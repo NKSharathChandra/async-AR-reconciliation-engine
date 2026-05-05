@@ -141,15 +141,27 @@ async def test_orchestrator_resumes_from_failure(monkeypatch):
         db.add(record)
         await db.commit()
 
+    # Mid-attempt failures should leave the row in RETRYING, not FAILED —
+    # otherwise polling between ARQ retries shows a misleading FAILED status.
     async with AsyncSessionLocal() as db:
         with pytest.raises(stages.SimulatedFailureError):
-            await process_workflow(db, "test-retry-1")
+            await process_workflow(db, "test-retry-1", is_final_attempt=False)
 
     async with AsyncSessionLocal() as db:
         record = await db.get(WorkflowRecord, "test-retry-1")
         assert int(record.current_stage) == int(Stage.MATCHING)
-        assert record.status == Status.FAILED
+        assert record.status == Status.RETRYING
         assert record.retries == 1
+
+    # Simulate ARQ's last attempt also failing — now we should see FAILED.
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(stages.SimulatedFailureError):
+            await process_workflow(db, "test-retry-1", is_final_attempt=True)
+
+    async with AsyncSessionLocal() as db:
+        record = await db.get(WorkflowRecord, "test-retry-1")
+        assert record.status == Status.FAILED
+        assert record.retries == 2
 
     monkeypatch.setattr(stages, "run_validation", original_validation)
 

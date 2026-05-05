@@ -14,8 +14,9 @@ class Stage(enum.IntEnum):
 class Status(enum.Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
+    RETRYING = "RETRYING"   # transient failure, ARQ will retry
     COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+    FAILED = "FAILED"       # terminal — retries exhausted or unexpected error
 
 class WorkflowRecord(Base):
     __tablename__ = "workflows"

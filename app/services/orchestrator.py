@@ -5,9 +5,14 @@ from app.services import stages
 
 logger = logging.getLogger(__name__)
 
-async def process_workflow(db_session: AsyncSession, record_id: str):
-    """
-    Core orchestrator logic. Resumes from the last successful stage.
+async def process_workflow(
+    db_session: AsyncSession, record_id: str, is_final_attempt: bool = True
+):
+    """Core orchestrator logic. Resumes from the last successful stage.
+
+    `is_final_attempt`: when False, transient stage failures leave the row in
+    `RETRYING` so callers polling the API don't see a misleading `FAILED` status
+    between ARQ retry attempts. The worker passes False until ARQ's last try.
     """
     workflow = await db_session.get(WorkflowRecord, record_id)
     if not workflow:
@@ -52,11 +57,15 @@ async def process_workflow(db_session: AsyncSession, record_id: str):
         logger.info(f"Workflow {record_id} fully completed.")
 
     except stages.SimulatedFailureError as e:
-        logger.warning(f"Workflow {record_id} failed at a stage: {e}. Will retry.")
-        workflow.status = Status.FAILED
         workflow.retries += 1
+        if is_final_attempt:
+            logger.warning(f"Workflow {record_id} failed terminally: {e}.")
+            workflow.status = Status.FAILED
+        else:
+            logger.info(f"Workflow {record_id} hit transient failure: {e}. Will retry.")
+            workflow.status = Status.RETRYING
         await db_session.commit()
-        raise e # Re-raise to let the worker queue (ARQ) handle the retry
+        raise e # Re-raise to let ARQ handle the retry
 
     except Exception as e:
         logger.error(f"Workflow {record_id} encountered an unexpected error: {e}")
